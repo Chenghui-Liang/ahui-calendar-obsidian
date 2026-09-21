@@ -12,21 +12,14 @@ import { defaultSettings, ISettings } from "src/settings";
 import { getDateUIDFromFile } from "./utils";
 
 function createDailyNotesStore() {
-  let hasError = false;
-  const store = writable<Record<string, TFile>>(null);
+  const store = writable<Record<string, TFile>>({});
   return {
     reindex: () => {
       try {
-        const dailyNotes = getAllDailyNotes();
-        store.set(dailyNotes);
-        hasError = false;
-      } catch (err) {
-        if (!hasError) {
-          // Avoid error being shown multiple times
-          console.log("[Calendar] Failed to find daily notes folder", err);
-        }
+        store.set(getAllDailyNotes());
+      } catch {
+        // daily notes 文件夹不存在/配置异常时按空处理，避免重复报错刷屏
         store.set({});
-        hasError = true;
       }
     },
     ...store,
@@ -34,21 +27,14 @@ function createDailyNotesStore() {
 }
 
 function createWeeklyNotesStore() {
-  let hasError = false;
-  const store = writable<Record<string, TFile>>(null);
+  const store = writable<Record<string, TFile>>({});
   return {
     reindex: () => {
       try {
-        const weeklyNotes = getAllWeeklyNotes();
-        store.set(weeklyNotes);
-        hasError = false;
-      } catch (err) {
-        if (!hasError) {
-          // Avoid error being shown multiple times
-          console.log("[Calendar] Failed to find weekly notes folder", err);
-        }
+        store.set(getAllWeeklyNotes());
+      } catch {
+        // weekly notes 文件夹不存在/配置异常时按空处理，避免重复报错刷屏
         store.set({});
-        hasError = true;
       }
     },
     ...store,

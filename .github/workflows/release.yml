@@ -18,6 +18,12 @@ jobs:
           node-version: "20"
       - run: npm install
       - run: npx rollup -c
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            main.js
+            styles.css
       - name: Create release and upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

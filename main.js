@@ -419,7 +419,9 @@ function component_subscribe(component, store, callback) {
     component.$$.on_destroy.push(subscribe(store, callback));
 }
 function detach$1(node) {
-    node.parentNode.removeChild(node);
+    if (node.parentNode) {
+        node.parentNode.removeChild(node);
+    }
 }
 function children$1(element) {
     return Array.from(element.childNodes);
@@ -434,15 +436,23 @@ function get_current_component$1() {
         throw new Error('Function called outside component initialization');
     return current_component$1;
 }
+/**
+ * Schedules a callback to run immediately before the component is unmounted.
+ *
+ * Out of `onMount`, `beforeUpdate`, `afterUpdate` and `onDestroy`, this is the
+ * only one that runs inside a server-side component.
+ *
+ * https://svelte.dev/docs#run-time-svelte-ondestroy
+ */
 function onDestroy(fn) {
     get_current_component$1().$$.on_destroy.push(fn);
 }
 
 const dirty_components$1 = [];
 const binding_callbacks$1 = [];
-const render_callbacks$1 = [];
+let render_callbacks$1 = [];
 const flush_callbacks$1 = [];
-const resolved_promise$1 = Promise.resolve();
+const resolved_promise$1 = /* @__PURE__ */ Promise.resolve();
 let update_scheduled$1 = false;
 function schedule_update$1() {
     if (!update_scheduled$1) {
@@ -456,22 +466,54 @@ function add_render_callback$1(fn) {
 function add_flush_callback(fn) {
     flush_callbacks$1.push(fn);
 }
-let flushing$1 = false;
+// flush() calls callbacks in this order:
+// 1. All beforeUpdate callbacks, in order: parents before children
+// 2. All bind:this callbacks, in reverse order: children before parents.
+// 3. All afterUpdate callbacks, in order: parents before children. EXCEPT
+//    for afterUpdates called during the initial onMount, which are called in
+//    reverse order: children before parents.
+// Since callbacks might update component values, which could trigger another
+// call to flush(), the following steps guard against this:
+// 1. During beforeUpdate, any updated components will be added to the
+//    dirty_components array and will cause a reentrant call to flush(). Because
+//    the flush index is kept outside the function, the reentrant call will pick
+//    up where the earlier call left off and go through all dirty components. The
+//    current_component value is saved and restored so that the reentrant call will
+//    not interfere with the "parent" flush() call.
+// 2. bind:this callbacks cannot trigger new flush() calls.
+// 3. During afterUpdate, any updated components will NOT have their afterUpdate
+//    callback called a second time; the seen_callbacks set, outside the flush()
+//    function, guarantees this behavior.
 const seen_callbacks$1 = new Set();
+let flushidx = 0; // Do *not* move this inside the flush() function
 function flush$1() {
-    if (flushing$1)
+    // Do not reenter flush while dirty components are updated, as this can
+    // result in an infinite loop. Instead, let the inner flush handle it.
+    // Reentrancy is ok afterwards for bindings etc.
+    if (flushidx !== 0) {
         return;
-    flushing$1 = true;
+    }
+    const saved_component = current_component$1;
     do {
         // first, call beforeUpdate functions
         // and update components
-        for (let i = 0; i < dirty_components$1.length; i += 1) {
-            const component = dirty_components$1[i];
-            set_current_component$1(component);
-            update$1(component.$$);
+        try {
+            while (flushidx < dirty_components$1.length) {
+                const component = dirty_components$1[flushidx];
+                flushidx++;
+                set_current_component$1(component);
+                update$1(component.$$);
+            }
+        }
+        catch (e) {
+            // reset dirty state to not end up in a deadlocked state and then rethrow
+            dirty_components$1.length = 0;
+            flushidx = 0;
+            throw e;
         }
         set_current_component$1(null);
         dirty_components$1.length = 0;
+        flushidx = 0;
         while (binding_callbacks$1.length)
             binding_callbacks$1.pop()();
         // then, once components are updated, call
@@ -491,8 +533,8 @@ function flush$1() {
         flush_callbacks$1.pop()();
     }
     update_scheduled$1 = false;
-    flushing$1 = false;
     seen_callbacks$1.clear();
+    set_current_component$1(saved_component);
 }
 function update$1($$) {
     if ($$.fragment !== null) {
@@ -503,6 +545,16 @@ function update$1($$) {
         $$.fragment && $$.fragment.p($$.ctx, dirty);
         $$.after_update.forEach(add_render_callback$1);
     }
+}
+/**
+ * Useful for example to execute remaining `afterUpdate` callbacks before executing `destroy`.
+ */
+function flush_render_callbacks(fns) {
+    const filtered = [];
+    const targets = [];
+    render_callbacks$1.forEach((c) => fns.indexOf(c) === -1 ? filtered.push(c) : targets.push(c));
+    targets.forEach((c) => c());
+    render_callbacks$1 = filtered;
 }
 const outroing$1 = new Set();
 let outros$1;
@@ -527,6 +579,9 @@ function transition_out$1(block, local, detach, callback) {
         });
         block.o(local);
     }
+    else if (callback) {
+        callback();
+    }
 }
 
 function bind(component, name, callback) {
@@ -540,14 +595,17 @@ function create_component$1(block) {
     block && block.c();
 }
 function mount_component$1(component, target, anchor, customElement) {
-    const { fragment, on_mount, on_destroy, after_update } = component.$$;
+    const { fragment, after_update } = component.$$;
     fragment && fragment.m(target, anchor);
     if (!customElement) {
         // onMount happens before the initial afterUpdate
         add_render_callback$1(() => {
-            const new_on_destroy = on_mount.map(run$1).filter(is_function$1);
-            if (on_destroy) {
-                on_destroy.push(...new_on_destroy);
+            const new_on_destroy = component.$$.on_mount.map(run$1).filter(is_function$1);
+            // if the component was destroyed immediately
+            // it will update the `$$.on_destroy` reference to `null`.
+            // the destructured on_destroy may still reference to the old array
+            if (component.$$.on_destroy) {
+                component.$$.on_destroy.push(...new_on_destroy);
             }
             else {
                 // Edge case - component was destroyed immediately,
@@ -562,6 +620,7 @@ function mount_component$1(component, target, anchor, customElement) {
 function destroy_component$1(component, detaching) {
     const $$ = component.$$;
     if ($$.fragment !== null) {
+        flush_render_callbacks($$.after_update);
         run_all$1($$.on_destroy);
         $$.fragment && $$.fragment.d(detaching);
         // TODO null out other refs, including component.$$ (but need to
@@ -578,12 +637,12 @@ function make_dirty$1(component, i) {
     }
     component.$$.dirty[(i / 31) | 0] |= (1 << (i % 31));
 }
-function init$1(component, options, instance, create_fragment, not_equal, props, dirty = [-1]) {
+function init$1(component, options, instance, create_fragment, not_equal, props, append_styles, dirty = [-1]) {
     const parent_component = current_component$1;
     set_current_component$1(component);
     const $$ = component.$$ = {
         fragment: null,
-        ctx: null,
+        ctx: [],
         // state
         props,
         update: noop$1,
@@ -595,12 +654,14 @@ function init$1(component, options, instance, create_fragment, not_equal, props,
         on_disconnect: [],
         before_update: [],
         after_update: [],
-        context: new Map(parent_component ? parent_component.$$.context : []),
+        context: new Map(options.context || (parent_component ? parent_component.$$.context : [])),
         // everything else
         callbacks: blank_object$1(),
         dirty,
-        skip_bound: false
+        skip_bound: false,
+        root: options.target || parent_component.$$.root
     };
+    append_styles && append_styles($$.root);
     let ready = false;
     $$.ctx = instance
         ? instance(component, options.props || {}, (i, ret, ...rest) => {
@@ -646,6 +707,9 @@ class SvelteComponent$1 {
         this.$destroy = noop$1;
     }
     $on(type, callback) {
+        if (!is_function$1(callback)) {
+            return noop$1;
+        }
         const callbacks = (this.$$.callbacks[type] || (this.$$.callbacks[type] = []));
         callbacks.push(callback);
         return () => {
@@ -667,20 +731,19 @@ const subscriber_queue = [];
 /**
  * Create a `Writable` store that allows both updating and reading by subscription.
  * @param {*=}value initial value
- * @param {StartStopNotifier=}start start and stop notifications for subscriptions
+ * @param {StartStopNotifier=} start
  */
 function writable(value, start = noop$1) {
     let stop;
-    const subscribers = [];
+    const subscribers = new Set();
     function set(new_value) {
         if (safe_not_equal$1(value, new_value)) {
             value = new_value;
             if (stop) { // store is ready
                 const run_queue = !subscriber_queue.length;
-                for (let i = 0; i < subscribers.length; i += 1) {
-                    const s = subscribers[i];
-                    s[1]();
-                    subscriber_queue.push(s, value);
+                for (const subscriber of subscribers) {
+                    subscriber[1]();
+                    subscriber_queue.push(subscriber, value);
                 }
                 if (run_queue) {
                     for (let i = 0; i < subscriber_queue.length; i += 2) {
@@ -696,17 +759,14 @@ function writable(value, start = noop$1) {
     }
     function subscribe(run, invalidate = noop$1) {
         const subscriber = [run, invalidate];
-        subscribers.push(subscriber);
-        if (subscribers.length === 1) {
+        subscribers.add(subscriber);
+        if (subscribers.size === 1) {
             stop = start(set) || noop$1;
         }
         run(value);
         return () => {
-            const index = subscribers.indexOf(subscriber);
-            if (index !== -1) {
-                subscribers.splice(index, 1);
-            }
-            if (subscribers.length === 0) {
+            subscribers.delete(subscriber);
+            if (subscribers.size === 0 && stop) {
                 stop();
                 stop = null;
             }
@@ -946,9 +1006,8 @@ const defaultSettings = Object.freeze({
 });
 function appHasPeriodicNotesPluginLoaded() {
     var _a, _b;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const periodicNotes = window.app.plugins.getPlugin("periodic-notes");
-    return periodicNotes && ((_b = (_a = periodicNotes.settings) === null || _a === void 0 ? void 0 : _a.weekly) === null || _b === void 0 ? void 0 : _b.enabled);
+    return !!((_b = (_a = periodicNotes === null || periodicNotes === void 0 ? void 0 : periodicNotes.settings) === null || _a === void 0 ? void 0 : _a.weekly) === null || _b === void 0 ? void 0 : _b.enabled);
 }
 /** textarea <-> string[] */
 function linesToArray(value) {
@@ -973,7 +1032,7 @@ class CalendarSettingsTab extends obsidian.PluginSettingTab {
         const { containerEl } = this;
         containerEl.empty();
         // ================= 日期笔记 =================
-        containerEl.createEl("h3", { text: t.settings.dateNotesHeading });
+        new obsidian.Setting(containerEl).setName(t.settings.dateNotesHeading).setHeading();
         new obsidian.Setting(containerEl)
             .setName(t.settings.dateFormats)
             .addTextArea((text) => {
@@ -1033,7 +1092,7 @@ class CalendarSettingsTab extends obsidian.PluginSettingTab {
             });
         });
         // ================= 分组 =================
-        containerEl.createEl("h3", { text: t.settings.groupsHeading });
+        new obsidian.Setting(containerEl).setName(t.settings.groupsHeading).setHeading();
         this.groupsEl = containerEl.createDiv("ahui-calendar-groups");
         this.renderGroups();
         new obsidian.Setting(containerEl).addButton((button) => {
@@ -1053,34 +1112,35 @@ class CalendarSettingsTab extends obsidian.PluginSettingTab {
             });
         });
         // ================= 其它（沿用上游）=================
-        containerEl.createEl("h3", { text: t.settings.generalHeading });
+        new obsidian.Setting(containerEl).setName(t.settings.generalHeading).setHeading();
         this.addWeekStartSetting();
         this.addConfirmCreateSetting();
         this.addShowWeeklyNoteSetting();
         if (this.plugin.options.showWeeklyNote &&
             !appHasPeriodicNotesPluginLoaded()) {
-            containerEl.createEl("h3", { text: t.settings.weeklyHeading });
+            new obsidian.Setting(containerEl).setName(t.settings.weeklyHeading).setHeading();
             this.addWeeklyNoteFormatSetting();
             this.addWeeklyNoteTemplateSetting();
             this.addWeeklyNoteFolderSetting();
         }
-        containerEl.createEl("h3", { text: t.settings.advancedHeading });
+        new obsidian.Setting(containerEl).setName(t.settings.advancedHeading).setHeading();
         this.addLocaleOverrideSetting();
     }
     renderGroups() {
-        if (!this.groupsEl)
+        const groupsEl = this.groupsEl;
+        if (!groupsEl)
             return;
-        this.groupsEl.empty();
+        groupsEl.empty();
         const groups = this.plugin.options.groups || [];
         if (groups.length === 0) {
-            this.groupsEl.createEl("p", {
+            groupsEl.createEl("p", {
                 cls: "setting-item-description",
                 text: t.settings.noGroups,
             });
             return;
         }
         groups.forEach((group, index) => {
-            new obsidian.Setting(this.groupsEl)
+            new obsidian.Setting(groupsEl)
                 .addText((text) => {
                 text.setPlaceholder(t.settings.groupNamePlaceholder);
                 text.setValue(group.name);
@@ -1135,7 +1195,7 @@ class CalendarSettingsTab extends obsidian.PluginSettingTab {
             });
             dropdown.setValue(this.plugin.options.weekStart);
             dropdown.onChange(async (value) => {
-                this.plugin.writeOptions(() => ({
+                await this.plugin.writeOptions(() => ({
                     weekStart: value,
                 }));
             });
@@ -1147,7 +1207,7 @@ class CalendarSettingsTab extends obsidian.PluginSettingTab {
             .addToggle((toggle) => {
             toggle.setValue(this.plugin.options.shouldConfirmBeforeCreate);
             toggle.onChange(async (value) => {
-                this.plugin.writeOptions(() => ({
+                await this.plugin.writeOptions(() => ({
                     shouldConfirmBeforeCreate: value,
                 }));
             });
@@ -1159,7 +1219,7 @@ class CalendarSettingsTab extends obsidian.PluginSettingTab {
             .addToggle((toggle) => {
             toggle.setValue(this.plugin.options.showWeeklyNote);
             toggle.onChange(async (value) => {
-                this.plugin.writeOptions(() => ({ showWeeklyNote: value }));
+                await this.plugin.writeOptions(() => ({ showWeeklyNote: value }));
                 this.display(); // show/hide weekly settings
             });
         });
@@ -1171,7 +1231,7 @@ class CalendarSettingsTab extends obsidian.PluginSettingTab {
             textfield.setValue(this.plugin.options.weeklyNoteFormat);
             textfield.setPlaceholder(DEFAULT_WEEK_FORMAT);
             textfield.onChange(async (value) => {
-                this.plugin.writeOptions(() => ({ weeklyNoteFormat: value }));
+                await this.plugin.writeOptions(() => ({ weeklyNoteFormat: value }));
             });
         });
     }
@@ -1181,7 +1241,7 @@ class CalendarSettingsTab extends obsidian.PluginSettingTab {
             .addText((textfield) => {
             textfield.setValue(this.plugin.options.weeklyNoteTemplate);
             textfield.onChange(async (value) => {
-                this.plugin.writeOptions(() => ({ weeklyNoteTemplate: value }));
+                await this.plugin.writeOptions(() => ({ weeklyNoteTemplate: value }));
             });
         });
     }
@@ -1191,7 +1251,7 @@ class CalendarSettingsTab extends obsidian.PluginSettingTab {
             .addText((textfield) => {
             textfield.setValue(this.plugin.options.weeklyNoteFolder);
             textfield.onChange(async (value) => {
-                this.plugin.writeOptions(() => ({ weeklyNoteFolder: value }));
+                await this.plugin.writeOptions(() => ({ weeklyNoteFolder: value }));
             });
         });
     }
@@ -1208,7 +1268,7 @@ class CalendarSettingsTab extends obsidian.PluginSettingTab {
             });
             dropdown.setValue(this.plugin.options.localeOverride);
             dropdown.onChange(async (value) => {
-                this.plugin.writeOptions(() => ({
+                await this.plugin.writeOptions(() => ({
                     localeOverride: value,
                 }));
             });
@@ -1257,40 +1317,26 @@ function getDateUIDFromFile(file) {
 }
 
 function createDailyNotesStore() {
-    let hasError = false;
-    const store = writable(null);
+    const store = writable({});
     return Object.assign({ reindex: () => {
             try {
-                const dailyNotes = getAllDailyNotes_1();
-                store.set(dailyNotes);
-                hasError = false;
+                store.set(getAllDailyNotes_1());
             }
-            catch (err) {
-                if (!hasError) {
-                    // Avoid error being shown multiple times
-                    console.log("[Calendar] Failed to find daily notes folder", err);
-                }
+            catch (_a) {
+                // daily notes 文件夹不存在/配置异常时按空处理，避免重复报错刷屏
                 store.set({});
-                hasError = true;
             }
         } }, store);
 }
 function createWeeklyNotesStore() {
-    let hasError = false;
-    const store = writable(null);
+    const store = writable({});
     return Object.assign({ reindex: () => {
             try {
-                const weeklyNotes = getAllWeeklyNotes_1();
-                store.set(weeklyNotes);
-                hasError = false;
+                store.set(getAllWeeklyNotes_1());
             }
-            catch (err) {
-                if (!hasError) {
-                    // Avoid error being shown multiple times
-                    console.log("[Calendar] Failed to find weekly notes folder", err);
-                }
+            catch (_a) {
+                // weekly notes 文件夹不存在/配置异常时按空处理，避免重复报错刷屏
                 store.set({});
-                hasError = true;
             }
         } }, store);
 }
@@ -1333,9 +1379,8 @@ class ConfirmationModal extends obsidian.Modal {
                 cls: "mod-cta",
                 text: cta,
             })
-                .addEventListener("click", async (e) => {
-                await onAccept(e);
-                this.close();
+                .addEventListener("click", (e) => {
+                void onAccept(e).then(() => this.close());
             });
         });
     }
@@ -1353,9 +1398,7 @@ async function tryToCreateDailyNote(date, inNewSplit, settings, cb) {
     const filename = date.format(format);
     const createFile = async () => {
         const dailyNote = await createDailyNote_1(date);
-        const leaf = inNewSplit
-            ? workspace.splitActiveLeaf()
-            : workspace.getUnpinnedLeaf();
+        const leaf = workspace.getLeaf(inNewSplit);
         await leaf.openFile(dailyNote);
         cb === null || cb === void 0 ? void 0 : cb(dailyNote);
     };
@@ -1381,9 +1424,7 @@ async function tryToCreateWeeklyNote(date, inNewSplit, settings, cb) {
     const filename = date.format(format);
     const createFile = async () => {
         const dailyNote = await createWeeklyNote_1(date);
-        const leaf = inNewSplit
-            ? workspace.splitActiveLeaf()
-            : workspace.getUnpinnedLeaf();
+        const leaf = workspace.getLeaf(inNewSplit);
         await leaf.openFile(dailyNote);
         cb === null || cb === void 0 ? void 0 : cb(dailyNote);
     };
@@ -4134,7 +4175,7 @@ function configureGlobalMomentLocale(localeOverride = "system-default", weekStar
     return currentLocale;
 }
 
-/* src\ui\Calendar.svelte generated by Svelte v3.35.0 */
+/* src\ui\Calendar.svelte generated by Svelte v3.59.2 */
 
 function create_fragment(ctx) {
 	let calendarbase;
@@ -4164,7 +4205,7 @@ function create_fragment(ctx) {
 	}
 
 	calendarbase = new Calendar$1({ props: calendarbase_props });
-	binding_callbacks$1.push(() => bind(calendarbase, "displayedMonth", calendarbase_displayedMonth_binding));
+	binding_callbacks$1.push(() => bind(calendarbase, 'displayedMonth', calendarbase_displayedMonth_binding));
 
 	return {
 		c() {
@@ -4216,8 +4257,6 @@ function instance($$self, $$props, $$invalidate) {
 	let $activeFile;
 	component_subscribe($$self, settings, $$value => $$invalidate(8, $settings = $$value));
 	component_subscribe($$self, activeFile, $$value => $$invalidate(10, $activeFile = $$value));
-	
-	
 	let today;
 	let { displayedMonth = today } = $$props;
 	let { sources } = $$props;
@@ -4264,14 +4303,14 @@ function instance($$self, $$props, $$invalidate) {
 	}
 
 	$$self.$$set = $$props => {
-		if ("displayedMonth" in $$props) $$invalidate(0, displayedMonth = $$props.displayedMonth);
-		if ("sources" in $$props) $$invalidate(1, sources = $$props.sources);
-		if ("onHoverDay" in $$props) $$invalidate(2, onHoverDay = $$props.onHoverDay);
-		if ("onHoverWeek" in $$props) $$invalidate(3, onHoverWeek = $$props.onHoverWeek);
-		if ("onClickDay" in $$props) $$invalidate(4, onClickDay = $$props.onClickDay);
-		if ("onClickWeek" in $$props) $$invalidate(5, onClickWeek = $$props.onClickWeek);
-		if ("onContextMenuDay" in $$props) $$invalidate(6, onContextMenuDay = $$props.onContextMenuDay);
-		if ("onContextMenuWeek" in $$props) $$invalidate(7, onContextMenuWeek = $$props.onContextMenuWeek);
+		if ('displayedMonth' in $$props) $$invalidate(0, displayedMonth = $$props.displayedMonth);
+		if ('sources' in $$props) $$invalidate(1, sources = $$props.sources);
+		if ('onHoverDay' in $$props) $$invalidate(2, onHoverDay = $$props.onHoverDay);
+		if ('onHoverWeek' in $$props) $$invalidate(3, onHoverWeek = $$props.onHoverWeek);
+		if ('onClickDay' in $$props) $$invalidate(4, onClickDay = $$props.onClickDay);
+		if ('onClickWeek' in $$props) $$invalidate(5, onClickWeek = $$props.onClickWeek);
+		if ('onContextMenuDay' in $$props) $$invalidate(6, onContextMenuDay = $$props.onContextMenuDay);
+		if ('onContextMenuWeek' in $$props) $$invalidate(7, onContextMenuWeek = $$props.onContextMenuWeek);
 	};
 
 	$$self.$$.update = () => {
@@ -4449,6 +4488,8 @@ const tasksSource = {
 class CalendarView extends obsidian.ItemView {
     constructor(leaf) {
         super(leaf);
+        this.calendar = null;
+        this.settings = Object.assign({}, defaultSettings);
         /** 日历挂载点 */
         this.calendarEl = null;
         /** 日历下方的「当天笔记列表」容器 */
@@ -4457,25 +4498,151 @@ class CalendarView extends obsidian.ItemView {
         this.selectedDate = null;
         /** 缓存的 sources，保证 refresh 时不会重复向外部插件广播 calendar:open */
         this.sources = null;
-        this.openOrCreateDailyNote = this.openOrCreateDailyNote.bind(this);
-        this.openOrCreateWeeklyNote = this.openOrCreateWeeklyNote.bind(this);
-        this.onNoteSettingsUpdate = this.onNoteSettingsUpdate.bind(this);
-        this.onFileCreated = this.onFileCreated.bind(this);
-        this.onFileDeleted = this.onFileDeleted.bind(this);
-        this.onFileModified = this.onFileModified.bind(this);
-        this.onFileOpen = this.onFileOpen.bind(this);
-        this.onHoverDay = this.onHoverDay.bind(this);
-        this.onHoverWeek = this.onHoverWeek.bind(this);
-        this.onContextMenuDay = this.onContextMenuDay.bind(this);
-        this.onContextMenuWeek = this.onContextMenuWeek.bind(this);
+        // ==========================================================================
+        // 鼠标交互
+        // ==========================================================================
+        this.onHoverDay = (date, targetEl, isMetaPressed) => {
+            if (!isMetaPressed) {
+                return;
+            }
+            const notes = dateNotesIndex.getNotes(date);
+            const note = notes.length ? notes[0].file : null;
+            const linkText = note ? note.basename : date.format("YYYY-MM-DD");
+            this.app.workspace.trigger("link-hover", this, targetEl, linkText, note === null || note === void 0 ? void 0 : note.path);
+        };
+        this.onHoverWeek = (date, targetEl, isMetaPressed) => {
+            if (!isMetaPressed) {
+                return;
+            }
+            const note = getWeeklyNote_1(date, get_store_value(weeklyNotes));
+            const { format } = getWeeklyNoteSettings_1();
+            this.app.workspace.trigger("link-hover", this, targetEl, date.format(format), note === null || note === void 0 ? void 0 : note.path);
+        };
+        this.onContextMenuDay = (date, event) => {
+            const notes = dateNotesIndex.getNotes(date);
+            if (notes.length === 0) {
+                // If no file exists for a given day, show nothing.
+                return;
+            }
+            const position = { x: event.pageX, y: event.pageY };
+            if (notes.length === 1) {
+                showFileMenu(this.app, notes[0].file, position);
+                return;
+            }
+            // 多篇：先选一篇，再弹该文件的菜单
+            const menu = new obsidian.Menu(this.app);
+            for (const note of notes) {
+                menu.addItem((item) => item
+                    .setTitle(`${this.groupNameFor(note.groupId)} · ${note.file.basename}`)
+                    .setIcon("file-text")
+                    .onClick(() => showFileMenu(this.app, note.file, position)));
+            }
+            menu.showAtPosition(position);
+        };
+        this.onContextMenuWeek = (date, event) => {
+            const note = getWeeklyNote_1(date, get_store_value(weeklyNotes));
+            if (!note) {
+                // If no file exists for a given day, show nothing.
+                return;
+            }
+            showFileMenu(this.app, note, {
+                x: event.pageX,
+                y: event.pageY,
+            });
+        };
+        // ==========================================================================
+        // 事件
+        // ==========================================================================
+        this.onNoteSettingsUpdate = () => {
+            dailyNotes.reindex();
+            weeklyNotes.reindex();
+            this.updateActiveFile();
+        };
+        this.onFileDeleted = async (file) => {
+            if (getDateFromFile_1(file, "day")) {
+                dailyNotes.reindex();
+                this.updateActiveFile();
+            }
+            if (getDateFromFile_1(file, "week")) {
+                weeklyNotes.reindex();
+                this.updateActiveFile();
+            }
+        };
+        this.onFileModified = async (file) => {
+            const date = getDateFromFile_1(file, "day") || getDateFromFile_1(file, "week");
+            if (date && this.calendar) {
+                this.calendar.tick();
+            }
+        };
+        this.onFileCreated = (file) => {
+            if (this.app.workspace.layoutReady && this.calendar) {
+                if (getDateFromFile_1(file, "day")) {
+                    dailyNotes.reindex();
+                    this.calendar.tick();
+                }
+                if (getDateFromFile_1(file, "week")) {
+                    weeklyNotes.reindex();
+                    this.calendar.tick();
+                }
+            }
+        };
+        this.onFileOpen = (_file) => {
+            if (this.app.workspace.layoutReady) {
+                this.updateActiveFile();
+            }
+        };
+        // ==========================================================================
+        // 打开 / 新建
+        // ==========================================================================
+        this.openOrCreateWeeklyNote = async (date, inNewSplit) => {
+            const { workspace } = this.app;
+            const startOfWeek = date.clone().startOf("week");
+            const existingFile = getWeeklyNote_1(date, get_store_value(weeklyNotes));
+            if (!existingFile) {
+                // File doesn't exist
+                tryToCreateWeeklyNote(startOfWeek, inNewSplit, this.settings, (file) => {
+                    activeFile.setFile(file);
+                });
+                return;
+            }
+            const leaf = workspace.getLeaf(inNewSplit);
+            await leaf.openFile(existingFile);
+            activeFile.setFile(existingFile);
+        };
+        /** 打开一篇日期笔记 */
+        this.openNote = async (file, inNewSplit) => {
+            const { workspace } = this.app;
+            // vault.getConfig 未包含在公开类型里，用最小类型断言读取默认视图模式
+            const mode = this.app.vault.getConfig("defaultViewMode");
+            const leaf = workspace.getLeaf(inNewSplit);
+            await leaf.openFile(file, { mode });
+            activeFile.setFile(file);
+        };
+        /**
+         * 点击日历格。
+         *
+         * 无论几篇，都先在下方列表里展示当天全部笔记；
+         * 只有恰好一篇时顺手打开它，多篇则由用户在列表里挑
+         * （上游这里只能打开唯一一篇，其余的点不到）。
+         */
+        this.openOrCreateDailyNote = async (date, inNewSplit) => {
+            const notes = dateNotesIndex.getNotes(date);
+            this.renderNotesFor(date);
+            if (notes.length === 0) {
+                // 不自动创建，交给列表里的「新建」按钮
+                return;
+            }
+            if (notes.length === 1) {
+                await this.openNote(notes[0].file, inNewSplit);
+            }
+        };
         this.registerEvent(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        this.app.workspace.on("periodic-notes:settings-updated", this.onNoteSettingsUpdate));
-        this.registerEvent(this.app.vault.on("create", this.onFileCreated));
-        this.registerEvent(this.app.vault.on("delete", this.onFileDeleted));
-        this.registerEvent(this.app.vault.on("modify", this.onFileModified));
-        this.registerEvent(this.app.workspace.on("file-open", this.onFileOpen));
-        this.settings = null;
+        // periodic-notes 插件的自定义事件未包含在 obsidian 类型定义里，用最小类型接入
+        this.app.workspace.on("periodic-notes:settings-updated", () => this.onNoteSettingsUpdate()));
+        this.registerEvent(this.app.vault.on("create", (file) => this.onFileCreated(file)));
+        this.registerEvent(this.app.vault.on("delete", (file) => this.onFileDeleted(file)));
+        this.registerEvent(this.app.vault.on("modify", (file) => this.onFileModified(file)));
+        this.registerEvent(this.app.workspace.on("file-open", (file) => this.onFileOpen(file)));
         settings.subscribe((val) => {
             this.settings = val;
             // Refresh the calendar if settings change
@@ -4496,6 +4663,7 @@ class CalendarView extends obsidian.ItemView {
     onClose() {
         if (this.calendar) {
             this.calendar.$destroy();
+            this.calendar = null;
         }
         return Promise.resolve();
     }
@@ -4642,105 +4810,9 @@ class CalendarView extends obsidian.ItemView {
             });
         });
     }
-    // ==========================================================================
-    // 鼠标交互
-    // ==========================================================================
-    onHoverDay(date, targetEl, isMetaPressed) {
-        if (!isMetaPressed) {
-            return;
-        }
-        const notes = dateNotesIndex.getNotes(date);
-        const note = notes.length ? notes[0].file : null;
-        const linkText = note ? note.basename : date.format("YYYY-MM-DD");
-        this.app.workspace.trigger("link-hover", this, targetEl, linkText, note === null || note === void 0 ? void 0 : note.path);
-    }
-    onHoverWeek(date, targetEl, isMetaPressed) {
-        if (!isMetaPressed) {
-            return;
-        }
-        const note = getWeeklyNote_1(date, get_store_value(weeklyNotes));
-        const { format } = getWeeklyNoteSettings_1();
-        this.app.workspace.trigger("link-hover", this, targetEl, date.format(format), note === null || note === void 0 ? void 0 : note.path);
-    }
-    onContextMenuDay(date, event) {
-        const notes = dateNotesIndex.getNotes(date);
-        if (notes.length === 0) {
-            // If no file exists for a given day, show nothing.
-            return;
-        }
-        const position = { x: event.pageX, y: event.pageY };
-        if (notes.length === 1) {
-            showFileMenu(this.app, notes[0].file, position);
-            return;
-        }
-        // 多篇：先选一篇，再弹该文件的菜单
-        const menu = new obsidian.Menu(this.app);
-        for (const note of notes) {
-            menu.addItem((item) => item
-                .setTitle(`${this.groupNameFor(note.groupId)} · ${note.file.basename}`)
-                .setIcon("file-text")
-                .onClick(() => showFileMenu(this.app, note.file, position)));
-        }
-        menu.showAtPosition(position);
-    }
-    onContextMenuWeek(date, event) {
-        const note = getWeeklyNote_1(date, get_store_value(weeklyNotes));
-        if (!note) {
-            // If no file exists for a given day, show nothing.
-            return;
-        }
-        showFileMenu(this.app, note, {
-            x: event.pageX,
-            y: event.pageY,
-        });
-    }
-    // ==========================================================================
-    // 事件
-    // ==========================================================================
-    onNoteSettingsUpdate() {
-        dailyNotes.reindex();
-        weeklyNotes.reindex();
-        this.updateActiveFile();
-    }
-    async onFileDeleted(file) {
-        if (getDateFromFile_1(file, "day")) {
-            dailyNotes.reindex();
-            this.updateActiveFile();
-        }
-        if (getDateFromFile_1(file, "week")) {
-            weeklyNotes.reindex();
-            this.updateActiveFile();
-        }
-    }
-    async onFileModified(file) {
-        const date = getDateFromFile_1(file, "day") || getDateFromFile_1(file, "week");
-        if (date && this.calendar) {
-            this.calendar.tick();
-        }
-    }
-    onFileCreated(file) {
-        if (this.app.workspace.layoutReady && this.calendar) {
-            if (getDateFromFile_1(file, "day")) {
-                dailyNotes.reindex();
-                this.calendar.tick();
-            }
-            if (getDateFromFile_1(file, "week")) {
-                weeklyNotes.reindex();
-                this.calendar.tick();
-            }
-        }
-    }
-    onFileOpen(_file) {
-        if (this.app.workspace.layoutReady) {
-            this.updateActiveFile();
-        }
-    }
     updateActiveFile() {
-        const { view } = this.app.workspace.activeLeaf;
-        let file = null;
-        if (view instanceof obsidian.FileView) {
-            file = view.file;
-        }
+        const view = this.app.workspace.getActiveViewOfType(obsidian.FileView);
+        const file = view ? view.file : null;
         activeFile.setFile(file);
         // 打开的是日期笔记时，下方列表跟着切换
         const date = dateNotesIndex.getDateForFile(file);
@@ -4753,76 +4825,28 @@ class CalendarView extends obsidian.ItemView {
     }
     revealActiveNote() {
         const { moment } = window;
-        const { activeLeaf } = this.app.workspace;
-        if (activeLeaf.view instanceof obsidian.FileView) {
+        const view = this.app.workspace.getActiveViewOfType(obsidian.FileView);
+        const calendar = this.calendar;
+        if (view) {
             // 先用索引解析（支持自定义日期格式）
-            const indexed = dateNotesIndex.getDateForFile(activeLeaf.view.file);
+            const indexed = dateNotesIndex.getDateForFile(view.file);
             if (indexed) {
-                this.calendar.$set({ displayedMonth: indexed });
+                calendar === null || calendar === void 0 ? void 0 : calendar.$set({ displayedMonth: indexed });
                 return;
             }
             // Check to see if the active note is a daily-note
-            const date = getDateFromFile_1(activeLeaf.view.file, "day");
+            const date = getDateFromFile_1(view.file, "day");
             if (date) {
-                this.calendar.$set({ displayedMonth: date });
+                calendar === null || calendar === void 0 ? void 0 : calendar.$set({ displayedMonth: date });
                 return;
             }
             // Check to see if the active note is a weekly-note
             const { format } = getWeeklyNoteSettings_1();
-            const weekly = moment(activeLeaf.view.file.basename, format, true);
+            const weekly = moment(view.file.basename, format, true);
             if (weekly.isValid()) {
-                this.calendar.$set({ displayedMonth: weekly });
+                calendar === null || calendar === void 0 ? void 0 : calendar.$set({ displayedMonth: weekly });
                 return;
             }
-        }
-    }
-    // ==========================================================================
-    // 打开 / 新建
-    // ==========================================================================
-    async openOrCreateWeeklyNote(date, inNewSplit) {
-        const { workspace } = this.app;
-        const startOfWeek = date.clone().startOf("week");
-        const existingFile = getWeeklyNote_1(date, get_store_value(weeklyNotes));
-        if (!existingFile) {
-            // File doesn't exist
-            tryToCreateWeeklyNote(startOfWeek, inNewSplit, this.settings, (file) => {
-                activeFile.setFile(file);
-            });
-            return;
-        }
-        const leaf = inNewSplit
-            ? workspace.splitActiveLeaf()
-            : workspace.getUnpinnedLeaf();
-        await leaf.openFile(existingFile);
-        activeFile.setFile(existingFile);
-    }
-    /** 打开一篇日期笔记 */
-    async openNote(file, inNewSplit) {
-        const { workspace } = this.app;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const mode = this.app.vault.getConfig("defaultViewMode");
-        const leaf = inNewSplit
-            ? workspace.splitActiveLeaf()
-            : workspace.getUnpinnedLeaf();
-        await leaf.openFile(file, { mode });
-        activeFile.setFile(file);
-    }
-    /**
-     * 点击日历格。
-     *
-     * 无论几篇，都先在下方列表里展示当天全部笔记；
-     * 只有恰好一篇时顺手打开它，多篇则由用户在列表里挑
-     * （上游这里只能打开唯一一篇，其余的点不到）。
-     */
-    async openOrCreateDailyNote(date, inNewSplit) {
-        const notes = dateNotesIndex.getNotes(date);
-        this.renderNotesFor(date);
-        if (notes.length === 0) {
-            // 不自动创建，交给列表里的「新建」按钮
-            return;
-        }
-        if (notes.length === 1) {
-            await this.openNote(notes[0].file, inNewSplit);
         }
     }
     /** 新建日期笔记：配置了 New note folder 就自己建，否则沿用 Daily Notes 行为 */
@@ -4866,6 +4890,11 @@ class CalendarPlugin extends obsidian.Plugin {
         this.dateNotesIndex = dateNotesIndex;
         this.rebuildTimer = null;
     }
+    /** 日历视图不在 registerView 里缓存实例（官方审核要求），需要时从 leaf 取 */
+    get view() {
+        const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_CALENDAR)[0];
+        return leaf ? leaf.view : null;
+    }
     onunload() {
         this.app.workspace
             .getLeavesOfType(VIEW_TYPE_CALENDAR)
@@ -4875,7 +4904,7 @@ class CalendarPlugin extends obsidian.Plugin {
         this.register(settings.subscribe((value) => {
             this.options = value;
         }));
-        this.registerView(VIEW_TYPE_CALENDAR, (leaf) => (this.view = new CalendarView(leaf)));
+        this.registerView(VIEW_TYPE_CALENDAR, (leaf) => new CalendarView(leaf));
         this.addCommand({
             id: "show-calendar-view",
             name: "Open view",
@@ -4890,16 +4919,17 @@ class CalendarPlugin extends obsidian.Plugin {
             id: "open-weekly-note",
             name: "Open Weekly Note",
             checkCallback: (checking) => {
+                var _a;
                 if (checking) {
                     return !appHasPeriodicNotesPluginLoaded();
                 }
-                this.view.openOrCreateWeeklyNote(window.moment(), false);
+                (_a = this.view) === null || _a === void 0 ? void 0 : _a.openOrCreateWeeklyNote(window.moment(), false);
             },
         });
         this.addCommand({
             id: "reveal-active-note",
             name: "Reveal active note",
-            callback: () => this.view.revealActiveNote(),
+            callback: () => { var _a; return (_a = this.view) === null || _a === void 0 ? void 0 : _a.revealActiveNote(); },
         });
         this.addCommand({
             id: "rebuild-date-notes-index",
@@ -4926,12 +4956,13 @@ class CalendarPlugin extends obsidian.Plugin {
         }
     }
     initLeaf() {
+        var _a;
         if (this.app.workspace.getLeavesOfType(VIEW_TYPE_CALENDAR).length) {
             return;
         }
-        this.app.workspace.getRightLeaf(false).setViewState({
+        void ((_a = this.app.workspace.getRightLeaf(false)) === null || _a === void 0 ? void 0 : _a.setViewState({
             type: VIEW_TYPE_CALENDAR,
-        });
+        }));
     }
     /** 重建索引，并让已经打开的日历立即重绘 */
     rebuildIndex() {
@@ -4962,7 +4993,7 @@ class CalendarPlugin extends obsidian.Plugin {
         }, 500);
     }
     async loadOptions() {
-        const options = await this.loadData();
+        const options = (await this.loadData());
         settings.update((old) => {
             return Object.assign(Object.assign({}, old), (options || {}));
         });

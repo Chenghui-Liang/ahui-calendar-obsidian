@@ -16,7 +16,7 @@ function getNoteTags(note: TFile | null): string[] {
   const { metadataCache } = window.app;
   const frontmatter = metadataCache.getFileCache(note)?.frontmatter;
 
-  const tags = [];
+  const tags: string[] = [];
 
   if (frontmatter) {
     const frontmatterTags = parseFrontMatterTags(frontmatter) || [];
@@ -24,7 +24,7 @@ function getNoteTags(note: TFile | null): string[] {
   }
 
   // strip the '#' at the beginning
-  return tags.map((tag) => tag.substring(1));
+  return tags.map((tag: string) => tag.substring(1));
 }
 
 function getFormattedTagAttributes(note: TFile | null): Record<string, string> {

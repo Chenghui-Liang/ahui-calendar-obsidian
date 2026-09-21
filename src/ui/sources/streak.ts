@@ -30,7 +30,7 @@ export const streakSource: ICalendarSource = {
     return {
       classes: classList({ "has-note": count > 0 }),
       dots,
-    } as IDayMetadata;
+    };
   },
 
   getWeeklyMetadata: async (date: Moment): Promise<IDayMetadata> => {
@@ -38,6 +38,6 @@ export const streakSource: ICalendarSource = {
     return {
       classes: classList({ "has-note": !!file }),
       dots: [],
-    } as IDayMetadata;
+    };
   },
 };

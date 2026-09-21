@@ -2,8 +2,7 @@ import { App, Modal } from "obsidian";
 
 interface IConfirmationDialogParams {
   cta: string;
-  // eslint-disable-next-line
-  onAccept: (...args: any[]) => Promise<void>;
+  onAccept: (...args: unknown[]) => Promise<void>;
   text: string;
   title: string;
 }
@@ -27,9 +26,8 @@ export class ConfirmationModal extends Modal {
           cls: "mod-cta",
           text: cta,
         })
-        .addEventListener("click", async (e) => {
-          await onAccept(e);
-          this.close();
+        .addEventListener("click", (e) => {
+          void onAccept(e).then(() => this.close());
         });
     });
   }

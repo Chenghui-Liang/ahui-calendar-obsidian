@@ -11,6 +11,7 @@ import {
   Notice,
   normalizePath,
   TFile,
+  Vault,
   WorkspaceLeaf,
 } from "obsidian";
 import type { ICalendarSource } from "obsidian-calendar-ui";
@@ -21,6 +22,7 @@ import { t } from "src/i18n";
 import type { IDateNote } from "src/io/dateNotesIndex";
 import { tryToCreateDailyNote } from "src/io/dailyNotes";
 import { tryToCreateWeeklyNote } from "src/io/weeklyNotes";
+import { defaultSettings } from "src/settings";
 import type { ISettings } from "src/settings";
 
 import Calendar from "./ui/Calendar.svelte";
@@ -35,8 +37,8 @@ import {
 import { customTagsSource, streakSource, tasksSource } from "./ui/sources";
 
 export default class CalendarView extends ItemView {
-  private calendar: Calendar;
-  private settings: ISettings;
+  private calendar: Calendar | null = null;
+  private settings: ISettings = { ...defaultSettings };
 
   /** 日历挂载点 */
   private calendarEl: HTMLElement | null = null;
@@ -51,34 +53,22 @@ export default class CalendarView extends ItemView {
   constructor(leaf: WorkspaceLeaf) {
     super(leaf);
 
-    this.openOrCreateDailyNote = this.openOrCreateDailyNote.bind(this);
-    this.openOrCreateWeeklyNote = this.openOrCreateWeeklyNote.bind(this);
-
-    this.onNoteSettingsUpdate = this.onNoteSettingsUpdate.bind(this);
-    this.onFileCreated = this.onFileCreated.bind(this);
-    this.onFileDeleted = this.onFileDeleted.bind(this);
-    this.onFileModified = this.onFileModified.bind(this);
-    this.onFileOpen = this.onFileOpen.bind(this);
-
-    this.onHoverDay = this.onHoverDay.bind(this);
-    this.onHoverWeek = this.onHoverWeek.bind(this);
-
-    this.onContextMenuDay = this.onContextMenuDay.bind(this);
-    this.onContextMenuWeek = this.onContextMenuWeek.bind(this);
-
     this.registerEvent(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (<any>this.app.workspace).on(
-        "periodic-notes:settings-updated",
-        this.onNoteSettingsUpdate
+      // periodic-notes 插件的自定义事件未包含在 obsidian 类型定义里，用最小类型接入
+      (this.app.workspace as Workspace & {
+        on(
+          name: "periodic-notes:settings-updated",
+          callback: () => void
+        ): import("obsidian").EventRef;
+      }).on("periodic-notes:settings-updated", () =>
+        this.onNoteSettingsUpdate()
       )
     );
-    this.registerEvent(this.app.vault.on("create", this.onFileCreated));
-    this.registerEvent(this.app.vault.on("delete", this.onFileDeleted));
-    this.registerEvent(this.app.vault.on("modify", this.onFileModified));
-    this.registerEvent(this.app.workspace.on("file-open", this.onFileOpen));
+    this.registerEvent(this.app.vault.on("create", (file) => this.onFileCreated(file)));
+    this.registerEvent(this.app.vault.on("delete", (file) => this.onFileDeleted(file)));
+    this.registerEvent(this.app.vault.on("modify", (file) => this.onFileModified(file)));
+    this.registerEvent(this.app.workspace.on("file-open", (file) => this.onFileOpen(file)));
 
-    this.settings = null;
     settings.subscribe((val) => {
       this.settings = val;
 
@@ -104,6 +94,7 @@ export default class CalendarView extends ItemView {
   onClose(): Promise<void> {
     if (this.calendar) {
       this.calendar.$destroy();
+      this.calendar = null;
     }
     return Promise.resolve();
   }
@@ -276,11 +267,11 @@ export default class CalendarView extends ItemView {
   // 鼠标交互
   // ==========================================================================
 
-  onHoverDay(
+  onHoverDay = (
     date: Moment,
     targetEl: EventTarget,
     isMetaPressed: boolean
-  ): void {
+  ): void => {
     if (!isMetaPressed) {
       return;
     }
@@ -295,13 +286,13 @@ export default class CalendarView extends ItemView {
       linkText,
       note?.path
     );
-  }
+  };
 
-  onHoverWeek(
+  onHoverWeek = (
     date: Moment,
     targetEl: EventTarget,
     isMetaPressed: boolean
-  ): void {
+  ): void => {
     if (!isMetaPressed) {
       return;
     }
@@ -314,9 +305,9 @@ export default class CalendarView extends ItemView {
       date.format(format),
       note?.path
     );
-  }
+  };
 
-  private onContextMenuDay(date: Moment, event: MouseEvent): void {
+  private onContextMenuDay = (date: Moment, event: MouseEvent): void => {
     const notes = dateNotesIndex.getNotes(date);
     if (notes.length === 0) {
       // If no file exists for a given day, show nothing.
@@ -341,9 +332,9 @@ export default class CalendarView extends ItemView {
       );
     }
     menu.showAtPosition(position);
-  }
+  };
 
-  private onContextMenuWeek(date: Moment, event: MouseEvent): void {
+  private onContextMenuWeek = (date: Moment, event: MouseEvent): void => {
     const note = getWeeklyNote(date, get(weeklyNotes));
     if (!note) {
       // If no file exists for a given day, show nothing.
@@ -353,19 +344,19 @@ export default class CalendarView extends ItemView {
       x: event.pageX,
       y: event.pageY,
     });
-  }
+  };
 
   // ==========================================================================
   // 事件
   // ==========================================================================
 
-  private onNoteSettingsUpdate(): void {
+  private onNoteSettingsUpdate = (): void => {
     dailyNotes.reindex();
     weeklyNotes.reindex();
     this.updateActiveFile();
-  }
+  };
 
-  private async onFileDeleted(file: TFile): Promise<void> {
+  private onFileDeleted = async (file: TFile): Promise<void> => {
     if (getDateFromFile(file, "day")) {
       dailyNotes.reindex();
       this.updateActiveFile();
@@ -374,16 +365,16 @@ export default class CalendarView extends ItemView {
       weeklyNotes.reindex();
       this.updateActiveFile();
     }
-  }
+  };
 
-  private async onFileModified(file: TFile): Promise<void> {
+  private onFileModified = async (file: TFile): Promise<void> => {
     const date = getDateFromFile(file, "day") || getDateFromFile(file, "week");
     if (date && this.calendar) {
       this.calendar.tick();
     }
-  }
+  };
 
-  private onFileCreated(file: TFile): void {
+  private onFileCreated = (file: TFile): void => {
     if (this.app.workspace.layoutReady && this.calendar) {
       if (getDateFromFile(file, "day")) {
         dailyNotes.reindex();
@@ -394,21 +385,18 @@ export default class CalendarView extends ItemView {
         this.calendar.tick();
       }
     }
-  }
+  };
 
-  public onFileOpen(_file: TFile): void {
+  public onFileOpen = (_file: TFile): void => {
     if (this.app.workspace.layoutReady) {
       this.updateActiveFile();
     }
-  }
+  };
 
   private updateActiveFile(): void {
-    const { view } = this.app.workspace.activeLeaf;
+    const view = this.app.workspace.getActiveViewOfType(FileView);
 
-    let file = null;
-    if (view instanceof FileView) {
-      file = view.file;
-    }
+    const file = view ? view.file : null;
     activeFile.setFile(file);
 
     // 打开的是日期笔记时，下方列表跟着切换
@@ -424,28 +412,29 @@ export default class CalendarView extends ItemView {
 
   public revealActiveNote(): void {
     const { moment } = window;
-    const { activeLeaf } = this.app.workspace;
+    const view = this.app.workspace.getActiveViewOfType(FileView);
+    const calendar = this.calendar;
 
-    if (activeLeaf.view instanceof FileView) {
+    if (view) {
       // 先用索引解析（支持自定义日期格式）
-      const indexed = dateNotesIndex.getDateForFile(activeLeaf.view.file);
+      const indexed = dateNotesIndex.getDateForFile(view.file);
       if (indexed) {
-        this.calendar.$set({ displayedMonth: indexed });
+        calendar?.$set({ displayedMonth: indexed });
         return;
       }
 
       // Check to see if the active note is a daily-note
-      const date = getDateFromFile(activeLeaf.view.file, "day");
+      const date = getDateFromFile(view.file, "day");
       if (date) {
-        this.calendar.$set({ displayedMonth: date });
+        calendar?.$set({ displayedMonth: date });
         return;
       }
 
       // Check to see if the active note is a weekly-note
       const { format } = getWeeklyNoteSettings();
-      const weekly = moment(activeLeaf.view.file.basename, format, true);
+      const weekly = moment(view.file.basename, format, true);
       if (weekly.isValid()) {
-        this.calendar.$set({ displayedMonth: weekly });
+        calendar?.$set({ displayedMonth: weekly });
         return;
       }
     }
@@ -455,10 +444,10 @@ export default class CalendarView extends ItemView {
   // 打开 / 新建
   // ==========================================================================
 
-  async openOrCreateWeeklyNote(
+  openOrCreateWeeklyNote = async (
     date: Moment,
     inNewSplit: boolean
-  ): Promise<void> {
+  ): Promise<void> => {
     const { workspace } = this.app;
 
     const startOfWeek = date.clone().startOf("week");
@@ -473,25 +462,23 @@ export default class CalendarView extends ItemView {
       return;
     }
 
-    const leaf = inNewSplit
-      ? workspace.splitActiveLeaf()
-      : workspace.getUnpinnedLeaf();
+    const leaf = workspace.getLeaf(inNewSplit);
     await leaf.openFile(existingFile);
 
     activeFile.setFile(existingFile);
-  }
+  };
 
   /** 打开一篇日期笔记 */
-  private async openNote(file: TFile, inNewSplit: boolean): Promise<void> {
+  private openNote = async (file: TFile, inNewSplit: boolean): Promise<void> => {
     const { workspace } = this.app;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mode = (this.app.vault as any).getConfig("defaultViewMode");
-    const leaf = inNewSplit
-      ? workspace.splitActiveLeaf()
-      : workspace.getUnpinnedLeaf();
+    // vault.getConfig 未包含在公开类型里，用最小类型断言读取默认视图模式
+    const mode = (this.app.vault as Vault & {
+      getConfig(key: "defaultViewMode"): string;
+    }).getConfig("defaultViewMode");
+    const leaf = workspace.getLeaf(inNewSplit);
     await leaf.openFile(file, { mode });
     activeFile.setFile(file);
-  }
+  };
 
   /**
    * 点击日历格。
@@ -500,10 +487,10 @@ export default class CalendarView extends ItemView {
    * 只有恰好一篇时顺手打开它，多篇则由用户在列表里挑
    * （上游这里只能打开唯一一篇，其余的点不到）。
    */
-  async openOrCreateDailyNote(
+  openOrCreateDailyNote = async (
     date: Moment,
     inNewSplit: boolean
-  ): Promise<void> {
+  ): Promise<void> => {
     const notes = dateNotesIndex.getNotes(date);
 
     this.renderNotesFor(date);
@@ -516,7 +503,7 @@ export default class CalendarView extends ItemView {
     if (notes.length === 1) {
       await this.openNote(notes[0].file, inNewSplit);
     }
-  }
+  };
 
   /** 新建日期笔记：配置了 New note folder 就自己建，否则沿用 Daily Notes 行为 */
   private async createDateNote(

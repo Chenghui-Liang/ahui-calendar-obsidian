@@ -166,13 +166,13 @@ export class DateNotesIndex {
           a.groupId === null
             ? UNGROUPED_ORDER
             : groupOrder.has(a.groupId)
-            ? (groupOrder.get(a.groupId) as number)
+            ? groupOrder.get(a.groupId)
             : UNGROUPED_ORDER - 1;
         const ob =
           b.groupId === null
             ? UNGROUPED_ORDER
             : groupOrder.has(b.groupId)
-            ? (groupOrder.get(b.groupId) as number)
+            ? groupOrder.get(b.groupId)
             : UNGROUPED_ORDER - 1;
         if (oa !== ob) return oa - ob;
         return a.file.path.localeCompare(b.file.path);

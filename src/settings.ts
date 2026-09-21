@@ -59,7 +59,7 @@ const weekdays = [
 
 export const defaultSettings = Object.freeze({
   shouldConfirmBeforeCreate: true,
-  weekStart: "locale" as IWeekStartOption,
+  weekStart: "locale",
 
   wordsPerDot: DEFAULT_WORDS_PER_DOT,
 
@@ -79,9 +79,16 @@ export const defaultSettings = Object.freeze({
 });
 
 export function appHasPeriodicNotesPluginLoaded(): boolean {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const periodicNotes = (<any>window.app).plugins.getPlugin("periodic-notes");
-  return periodicNotes && periodicNotes.settings?.weekly?.enabled;
+  // periodic-notes 插件无公开类型定义，这里用最小结构断言而非 any
+  type PeriodicNotesPlugin = {
+    settings?: { weekly?: { enabled?: boolean } };
+  } | null;
+  const periodicNotes = (
+    window.app as unknown as {
+      plugins: { getPlugin(id: string): PeriodicNotesPlugin };
+    }
+  ).plugins.getPlugin("periodic-notes");
+  return !!periodicNotes?.settings?.weekly?.enabled;
 }
 
 /** textarea <-> string[] */
@@ -114,7 +121,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
     containerEl.empty();
 
     // ================= 日期笔记 =================
-    containerEl.createEl("h3", { text: t.settings.dateNotesHeading });
+    new Setting(containerEl).setName(t.settings.dateNotesHeading).setHeading();
 
     new Setting(containerEl)
       .setName(t.settings.dateFormats)
@@ -180,7 +187,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
       });
 
     // ================= 分组 =================
-    containerEl.createEl("h3", { text: t.settings.groupsHeading });
+    new Setting(containerEl).setName(t.settings.groupsHeading).setHeading();
 
     this.groupsEl = containerEl.createDiv("ahui-calendar-groups");
     this.renderGroups();
@@ -203,7 +210,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
     });
 
     // ================= 其它（沿用上游）=================
-    containerEl.createEl("h3", { text: t.settings.generalHeading });
+    new Setting(containerEl).setName(t.settings.generalHeading).setHeading();
     this.addWeekStartSetting();
     this.addConfirmCreateSetting();
     this.addShowWeeklyNoteSetting();
@@ -212,24 +219,25 @@ export class CalendarSettingsTab extends PluginSettingTab {
       this.plugin.options.showWeeklyNote &&
       !appHasPeriodicNotesPluginLoaded()
     ) {
-      containerEl.createEl("h3", { text: t.settings.weeklyHeading });
+      new Setting(containerEl).setName(t.settings.weeklyHeading).setHeading();
       this.addWeeklyNoteFormatSetting();
       this.addWeeklyNoteTemplateSetting();
       this.addWeeklyNoteFolderSetting();
     }
 
-    containerEl.createEl("h3", { text: t.settings.advancedHeading });
+    new Setting(containerEl).setName(t.settings.advancedHeading).setHeading();
     this.addLocaleOverrideSetting();
   }
 
   private renderGroups(): void {
-    if (!this.groupsEl) return;
-    this.groupsEl.empty();
+    const groupsEl = this.groupsEl;
+    if (!groupsEl) return;
+    groupsEl.empty();
 
     const groups = this.plugin.options.groups || [];
 
     if (groups.length === 0) {
-      this.groupsEl.createEl("p", {
+      groupsEl.createEl("p", {
         cls: "setting-item-description",
         text: t.settings.noGroups,
       });
@@ -237,7 +245,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
     }
 
     groups.forEach((group, index) => {
-      new Setting(this.groupsEl as HTMLElement)
+      new Setting(groupsEl)
         .addText((text) => {
           text.setPlaceholder(t.settings.groupNamePlaceholder);
           text.setValue(group.name);
@@ -299,7 +307,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
         });
         dropdown.setValue(this.plugin.options.weekStart);
         dropdown.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({
+          await this.plugin.writeOptions(() => ({
             weekStart: value as IWeekStartOption,
           }));
         });
@@ -312,7 +320,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.options.shouldConfirmBeforeCreate);
         toggle.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({
+          await this.plugin.writeOptions(() => ({
             shouldConfirmBeforeCreate: value,
           }));
         });
@@ -325,7 +333,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.options.showWeeklyNote);
         toggle.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({ showWeeklyNote: value }));
+          await this.plugin.writeOptions(() => ({ showWeeklyNote: value }));
           this.display(); // show/hide weekly settings
         });
       });
@@ -338,7 +346,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
         textfield.setValue(this.plugin.options.weeklyNoteFormat);
         textfield.setPlaceholder(DEFAULT_WEEK_FORMAT);
         textfield.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({ weeklyNoteFormat: value }));
+          await this.plugin.writeOptions(() => ({ weeklyNoteFormat: value }));
         });
       });
   }
@@ -349,7 +357,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
       .addText((textfield) => {
         textfield.setValue(this.plugin.options.weeklyNoteTemplate);
         textfield.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({ weeklyNoteTemplate: value }));
+          await this.plugin.writeOptions(() => ({ weeklyNoteTemplate: value }));
         });
       });
   }
@@ -360,7 +368,7 @@ export class CalendarSettingsTab extends PluginSettingTab {
       .addText((textfield) => {
         textfield.setValue(this.plugin.options.weeklyNoteFolder);
         textfield.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({ weeklyNoteFolder: value }));
+          await this.plugin.writeOptions(() => ({ weeklyNoteFolder: value }));
         });
       });
   }
@@ -379,8 +387,8 @@ export class CalendarSettingsTab extends PluginSettingTab {
         });
         dropdown.setValue(this.plugin.options.localeOverride);
         dropdown.onChange(async (value) => {
-          this.plugin.writeOptions(() => ({
-            localeOverride: value as ILocaleOverride,
+          await this.plugin.writeOptions(() => ({
+            localeOverride: value,
           }));
         });
       });

@@ -1,5 +1,9 @@
 # Ahui Calendar
 
+> An Obsidian calendar view that supports **multiple date notes per day**, grouped by folder.
+
+**English**: This is a fork of [liamcain/obsidian-calendar-plugin](https://github.com/liamcain/obsidian-calendar-plugin) (MIT). The upstream plugin indexes date notes as `Record<date, file>`, so only one note per day is ever visible. This fork supports **any number of date notes per day** — the calendar dots show how many notes exist on that day, and a persistent list below the calendar shows every note for the selected date, grouped by folder. Filename formats, scan scope, excluded folders, and groups are all configurable in the settings. UI text is currently Chinese only (see `src/i18n.ts` for localization).
+
 > Obsidian 日历插件：**一天可以有多篇日期笔记**，并按文件夹分组管理。
 
 本项目 fork 自 [liamcain/obsidian-calendar-plugin](https://github.com/liamcain/obsidian-calendar-plugin)（MIT），

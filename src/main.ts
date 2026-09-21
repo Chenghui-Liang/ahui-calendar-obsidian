@@ -22,7 +22,12 @@ export default class CalendarPlugin extends Plugin {
   public options: ISettings;
   /** 日期笔记索引（一天可以有多篇） */
   public dateNotesIndex = dateNotesIndex;
-  private view: CalendarView;
+
+  /** 日历视图不在 registerView 里缓存实例（官方审核要求），需要时从 leaf 取 */
+  private get view(): CalendarView | null {
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_CALENDAR)[0];
+    return leaf ? (leaf.view as CalendarView) : null;
+  }
 
   onunload(): void {
     this.app.workspace
@@ -39,7 +44,7 @@ export default class CalendarPlugin extends Plugin {
 
     this.registerView(
       VIEW_TYPE_CALENDAR,
-      (leaf: WorkspaceLeaf) => (this.view = new CalendarView(leaf))
+      (leaf: WorkspaceLeaf) => new CalendarView(leaf)
     );
 
     this.addCommand({
@@ -62,14 +67,14 @@ export default class CalendarPlugin extends Plugin {
         if (checking) {
           return !appHasPeriodicNotesPluginLoaded();
         }
-        this.view.openOrCreateWeeklyNote(window.moment(), false);
+        this.view?.openOrCreateWeeklyNote(window.moment(), false);
       },
     });
 
     this.addCommand({
       id: "reveal-active-note",
       name: "Reveal active note",
-      callback: () => this.view.revealActiveNote(),
+      callback: () => this.view?.revealActiveNote(),
     });
 
     this.addCommand({
@@ -119,7 +124,7 @@ export default class CalendarPlugin extends Plugin {
     if (this.app.workspace.getLeavesOfType(VIEW_TYPE_CALENDAR).length) {
       return;
     }
-    this.app.workspace.getRightLeaf(false).setViewState({
+    void this.app.workspace.getRightLeaf(false)?.setViewState({
       type: VIEW_TYPE_CALENDAR,
     });
   }
@@ -157,7 +162,7 @@ export default class CalendarPlugin extends Plugin {
   }
 
   async loadOptions(): Promise<void> {
-    const options = await this.loadData();
+    const options = (await this.loadData()) as Partial<ISettings> | null;
     settings.update((old) => {
       return {
         ...old,
