@@ -1,0 +1,142 @@
+.settings-banner {
+  background-color: var(--background-secondary-alt);
+  border-radius: 4px;
+  margin-bottom: 2em;
+  padding: 1.5em;
+  text-align: left;
+}
+
+.settings-banner h4 {
+  margin: 0;
+}
+
+/* ============================================================
+ * 日历视图：上半日历 + 下半「当天笔记列表」
+ * ============================================================ */
+.ahui-calendar-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  padding: 0;
+}
+
+.ahui-calendar-calendar {
+  flex: 0 0 auto;
+}
+
+.ahui-calendar-notes {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 6px;
+  padding: 6px 8px 12px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.ahui-calendar-notes-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.ahui-calendar-notes-date {
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.ahui-calendar-notes-count {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.ahui-calendar-notes-group {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 8px 0 3px;
+  padding-top: 6px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.ahui-calendar-notes-group:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.ahui-calendar-notes-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ahui-calendar-note-item {
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.1s ease-in;
+}
+
+.ahui-calendar-note-item:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.ahui-calendar-note-item.is-active {
+  background-color: var(--background-modifier-active-hover, var(--background-modifier-hover));
+  box-shadow: inset 2px 0 0 var(--interactive-accent);
+}
+
+.ahui-calendar-note-title {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+  line-height: 1.3;
+  word-break: break-all;
+}
+
+.ahui-calendar-note-path {
+  font-size: 0.7em;
+  color: var(--text-faint);
+  line-height: 1.3;
+  word-break: break-all;
+}
+
+.ahui-calendar-notes-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.ahui-calendar-notes-hint {
+  margin-top: 10px;
+  font-size: 0.7em;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+/* ============================================================
+ * 设置页
+ * ============================================================ */
+.ahui-calendar-textarea {
+  width: 100%;
+  min-height: 3.5em;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+.ahui-calendar-folder-input {
+  width: 220px;
+}
+
+.ahui-calendar-groups .setting-item {
+  border-top: none;
+  padding: 6px 0;
+}

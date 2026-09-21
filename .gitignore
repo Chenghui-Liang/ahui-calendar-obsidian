@@ -1,0 +1,16 @@
+# 依赖
+node_modules/
+
+# 构建日志
+build.log
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 构建产物：本项目选择提交 main.js，方便用户直接下载使用。
+# 如果你更希望走 GitHub Release 分发，取消下面两行注释，并改用 release 附件。
+# main.js
+# *.js.map
